@@ -1,8 +1,13 @@
 // wlclip-watch — print clipboard contents to stdout each time the Wayland
-// selection changes. Uses the wlr-data-control-unstable-v1 protocol so the
-// program does not need to own a window/surface (most Wayland clipboard APIs
-// require focus). Compositors that implement this protocol: niri, sway,
-// hyprland, wayfire, river, KDE Plasma 5.27+. GNOME does NOT.
+// selection changes. Uses the ext-data-control-v1 protocol so the program
+// does not need to own a window/surface (most Wayland clipboard APIs require
+// focus).
+//
+// ext-data-control-v1 is the official, cross-compositor successor to the
+// older (now deprecated) wlr-data-control-unstable-v1. It lives in the
+// `staging/` set of wayland-protocols. Supported by niri, sway, hyprland,
+// wayfire, river, and KDE Plasma. See README for the up-to-date support
+// matrix and notes on GNOME.
 //
 // Reference implementation in C: bugaevc/wl-clipboard (see README).
 //
@@ -11,7 +16,7 @@
 //     ./build/wlclip-watch
 
 #include <wayland-client.h>
-#include "wlr-data-control-unstable-v1-client-protocol.h"
+#include "ext-data-control-v1-client-protocol.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -37,8 +42,8 @@ struct State {
     wl_display* display = nullptr;
     wl_registry* registry = nullptr;
     wl_seat* seat = nullptr;
-    zwlr_data_control_manager_v1* manager = nullptr;
-    zwlr_data_control_device_v1* device = nullptr;
+    ext_data_control_manager_v1* manager = nullptr;
+    ext_data_control_device_v1* device = nullptr;
 
     // Per-offer scratch state. The compositor will call our offer() callback
     // once per supported mime type, so we accumulate the best match here.
@@ -59,11 +64,12 @@ void on_registry_global(void* data, wl_registry* registry, uint32_t name,
         // seat itself as a "where does the clipboard belong" handle).
         s->seat = static_cast<wl_seat*>(
             wl_registry_bind(registry, name, &wl_seat_interface, 1));
-    } else if (std::strcmp(interface, zwlr_data_control_manager_v1_interface.name) == 0) {
-        // v2 added primary_selection support; we want v2 even though we only
-        // care about regular selection (so we can ignore primary cleanly).
-        s->manager = static_cast<zwlr_data_control_manager_v1*>(
-            wl_registry_bind(registry, name, &zwlr_data_control_manager_v1_interface, 2));
+    } else if (std::strcmp(interface, ext_data_control_manager_v1_interface.name) == 0) {
+        // ext-data-control-v1 only has version 1. (Unlike the old wlr
+        // protocol, where primary_selection was a v2 addition, here it is
+        // part of the interface from the start.)
+        s->manager = static_cast<ext_data_control_manager_v1*>(
+            wl_registry_bind(registry, name, &ext_data_control_manager_v1_interface, 1));
     }
 }
 
@@ -78,11 +84,11 @@ const wl_registry_listener kRegistryListener = {
 };
 
 // ────────────────────────────────────────────────────────────────────────────
-// zwlr_data_control_offer_v1 listener: tells us which mime types this
+// ext_data_control_offer_v1 listener: tells us which mime types this
 // particular offer supports. Called multiple times — once per mime type.
 // ────────────────────────────────────────────────────────────────────────────
 
-void on_offer_mime(void* data, zwlr_data_control_offer_v1* /*offer*/,
+void on_offer_mime(void* data, ext_data_control_offer_v1* /*offer*/,
                    const char* mime_type) {
     auto* s = static_cast<State*>(data);
     for (int i = 0; i < (int)(sizeof(kPreferredMimes) / sizeof(*kPreferredMimes)); ++i) {
@@ -97,12 +103,12 @@ void on_offer_mime(void* data, zwlr_data_control_offer_v1* /*offer*/,
     }
 }
 
-const zwlr_data_control_offer_v1_listener kOfferListener = {
+const ext_data_control_offer_v1_listener kOfferListener = {
     .offer = on_offer_mime,
 };
 
 // ────────────────────────────────────────────────────────────────────────────
-// zwlr_data_control_device_v1 listener: this is where the action happens.
+// ext_data_control_device_v1 listener: this is where the action happens.
 //
 // Lifecycle of a clipboard change:
 //   1. data_offer    — compositor announces a new offer object
@@ -111,16 +117,16 @@ const zwlr_data_control_offer_v1_listener kOfferListener = {
 //   4. (we read it)  — we pipe(), receive(), then read the fd
 // ────────────────────────────────────────────────────────────────────────────
 
-void on_device_data_offer(void* data, zwlr_data_control_device_v1* /*device*/,
-                          zwlr_data_control_offer_v1* offer) {
+void on_device_data_offer(void* data, ext_data_control_device_v1* /*device*/,
+                          ext_data_control_offer_v1* offer) {
     auto* s = static_cast<State*>(data);
     s->chosen_mime.clear();
     s->chosen_priority = -1;
-    zwlr_data_control_offer_v1_add_listener(offer, &kOfferListener, s);
+    ext_data_control_offer_v1_add_listener(offer, &kOfferListener, s);
 }
 
-void on_device_selection(void* data, zwlr_data_control_device_v1* /*device*/,
-                         zwlr_data_control_offer_v1* offer) {
+void on_device_selection(void* data, ext_data_control_device_v1* /*device*/,
+                         ext_data_control_offer_v1* offer) {
     auto* s = static_cast<State*>(data);
 
     // offer == nullptr means "selection cleared" (no clipboard contents).
@@ -128,7 +134,7 @@ void on_device_selection(void* data, zwlr_data_control_device_v1* /*device*/,
 
     if (s->chosen_mime.empty()) {
         // No text-ish mime types; this is probably an image or something.
-        zwlr_data_control_offer_v1_destroy(offer);
+        ext_data_control_offer_v1_destroy(offer);
         return;
     }
 
@@ -137,14 +143,14 @@ void on_device_selection(void* data, zwlr_data_control_device_v1* /*device*/,
     // The pattern (see wl-clipboard's paste.c for reference):
     //
     //   1. int fds[2]; pipe(fds);
-    //   2. zwlr_data_control_offer_v1_receive(offer, mime, fds[1]);
+    //   2. ext_data_control_offer_v1_receive(offer, mime, fds[1]);
     //      The compositor will write the selection contents to fds[1].
     //   3. close(fds[1]);
     //   4. wl_display_flush(state.display);  // make sure receive() is sent
     //   5. read fds[0] in a loop until EOF, accumulating bytes.
     //   6. fwrite(...) to stdout, fputc('\n'), fflush(stdout).
     //   7. close(fds[0]);
-    //   8. zwlr_data_control_offer_v1_destroy(offer);
+    //   8. ext_data_control_offer_v1_destroy(offer);
     //
     // Subtlety: receive() is async. The compositor won't write to fds[1]
     // until you flush the display AND let it process. Easiest is to just
@@ -153,23 +159,23 @@ void on_device_selection(void* data, zwlr_data_control_device_v1* /*device*/,
     std::fprintf(stderr, "TODO: read offer for mime '%s' and print to stdout\n",
                  s->chosen_mime.c_str());
 
-    zwlr_data_control_offer_v1_destroy(offer);
+    ext_data_control_offer_v1_destroy(offer);
 }
 
-void on_device_finished(void*, zwlr_data_control_device_v1* device) {
+void on_device_finished(void*, ext_data_control_device_v1* device) {
     // Compositor told us we're done (e.g. seat disappeared). Clean exit.
-    zwlr_data_control_device_v1_destroy(device);
+    ext_data_control_device_v1_destroy(device);
     std::exit(0);
 }
 
-void on_device_primary_selection(void*, zwlr_data_control_device_v1*,
-                                 zwlr_data_control_offer_v1* offer) {
+void on_device_primary_selection(void*, ext_data_control_device_v1*,
+                                 ext_data_control_offer_v1* offer) {
     // Middle-click (primary) selection. We don't care about this for mining;
     // just destroy the offer so the compositor doesn't think we want it.
-    if (offer) zwlr_data_control_offer_v1_destroy(offer);
+    if (offer) ext_data_control_offer_v1_destroy(offer);
 }
 
-const zwlr_data_control_device_v1_listener kDeviceListener = {
+const ext_data_control_device_v1_listener kDeviceListener = {
     .data_offer = on_device_data_offer,
     .selection = on_device_selection,
     .finished = on_device_finished,
@@ -201,15 +207,15 @@ int main() {
     }
     if (!state.manager) {
         std::fprintf(stderr,
-            "wlclip-watch: compositor doesn't expose zwlr_data_control_manager_v1.\n"
+            "wlclip-watch: compositor doesn't expose ext_data_control_manager_v1.\n"
             "  This protocol is required. Supported on niri, sway, hyprland,\n"
-            "  wayfire, river, KDE Plasma 5.27+. NOT on GNOME.\n");
+            "  wayfire, river, and KDE Plasma. See README for the support matrix.\n");
         return 1;
     }
 
-    state.device = zwlr_data_control_manager_v1_get_data_device(
+    state.device = ext_data_control_manager_v1_get_data_device(
         state.manager, state.seat);
-    zwlr_data_control_device_v1_add_listener(state.device, &kDeviceListener, &state);
+    ext_data_control_device_v1_add_listener(state.device, &kDeviceListener, &state);
 
     // Main event loop. Each iteration dispatches whatever events arrived and
     // calls our listener callbacks. wl_display_dispatch blocks until events
@@ -219,8 +225,8 @@ int main() {
     }
 
     // Unreachable in normal operation — only here if dispatch errored.
-    zwlr_data_control_device_v1_destroy(state.device);
-    zwlr_data_control_manager_v1_destroy(state.manager);
+    ext_data_control_device_v1_destroy(state.device);
+    ext_data_control_manager_v1_destroy(state.manager);
     wl_seat_destroy(state.seat);
     wl_registry_destroy(state.registry);
     wl_display_disconnect(state.display);

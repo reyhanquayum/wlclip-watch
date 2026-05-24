@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(wlclip-watch C CXX)  # C is for the wayland-scanner output; CXX is main.cpp
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)  # so clangd / lsp pick up the build
@@ -14,13 +14,17 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
 
 # --- wayland-scanner: generates C glue from protocol XML -------------------
-# Most Wayland protocols (including wlr-data-control) are defined in XML.
+# Most Wayland protocols (including ext-data-control) are defined in XML.
 # `wayland-scanner` is a code generator that emits both a C header and a C
 # implementation file from that XML. We compile both into our binary.
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
+# We use ext-data-control-v1: the official, cross-compositor clipboard-manager
+# protocol. It replaces the older wlr-data-control-unstable-v1, which is now
+# deprecated. The XML is vendored in protocols/ (copied from the system's
+# wayland-protocols package, staging/ set) so the build is self-contained.
 set(PROTO_DIR ${CMAKE_SOURCE_DIR}/protocols)
-set(PROTO_NAME wlr-data-control-unstable-v1)
+set(PROTO_NAME ext-data-control-v1)
 set(PROTO_XML ${PROTO_DIR}/${PROTO_NAME}.xml)
 set(PROTO_HEADER ${CMAKE_BINARY_DIR}/${PROTO_NAME}-client-protocol.h)
 set(PROTO_SOURCE ${CMAKE_BINARY_DIR}/${PROTO_NAME}-protocol.c)
