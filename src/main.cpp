@@ -15,6 +15,7 @@
 //     cmake -B build && cmake --build build
 //     ./build/wlclip-watch
 
+#include <print>
 #include <sys/types.h>
 #include <wayland-client.h>
 #include "ext-data-control-v1-client-protocol.h"
@@ -142,7 +143,7 @@ void on_device_selection(void* data, ext_data_control_device_v1* /*device*/,
 
     int fds[2];
     if(pipe(fds) == -1){
-      std::fprintf(stderr, "pipe failed: %s\n", std::strerror(errno)); 
+      std::println(stderr, "pipe failed: %s", std::strerror(errno)); 
       return;
     }
     // reminder: fds[0] = read end, fds[1] = write end
@@ -189,8 +190,8 @@ int main() {
 
     state.display = wl_display_connect(nullptr);
     if (!state.display) {
-        std::fprintf(stderr, "wlclip-watch: failed to connect to Wayland display\n");
-        std::fprintf(stderr, "  (is WAYLAND_DISPLAY set? are you running on Wayland?)\n");
+        std::println(stderr, "wlclip-watch: failed to connect to Wayland display");
+        std::println(stderr, "  (is WAYLAND_DISPLAY set? are you running on Wayland?)");
         return 1;
     }
 
@@ -202,11 +203,11 @@ int main() {
     wl_display_roundtrip(state.display);
 
     if (!state.seat) {
-        std::fprintf(stderr, "wlclip-watch: no wl_seat advertised by compositor\n");
+        std::println(stderr, "wlclip-watch: no wl_seat advertised by compositor");
         return 1;
     }
     if (!state.manager) {
-        std::fprintf(stderr,
+        std::print(stderr,
             "wlclip-watch: compositor doesn't expose ext_data_control_manager_v1.\n"
             "  This protocol is required. Supported on niri, sway, hyprland,\n"
             "  wayfire, river, and KDE Plasma. See README for the support matrix.\n");
