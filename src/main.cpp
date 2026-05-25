@@ -15,6 +15,7 @@
 //     cmake -B build && cmake --build build
 //     ./build/wlclip-watch
 
+#include <sys/types.h>
 #include <wayland-client.h>
 #include "ext-data-control-v1-client-protocol.h"
 
@@ -126,7 +127,8 @@ void on_device_data_offer(void* data, ext_data_control_device_v1* /*device*/,
 }
 
 void on_device_selection(void* data, ext_data_control_device_v1* /*device*/,
-                         ext_data_control_offer_v1* offer) {
+    ext_data_control_offer_v1* offer) {
+
     auto* s = static_cast<State*>(data);
 
     // offer == nullptr means "selection cleared" (no clipboard contents).
@@ -138,26 +140,24 @@ void on_device_selection(void* data, ext_data_control_device_v1* /*device*/,
         return;
     }
 
-    // TODO #1 — read the clipboard content and write to stdout.
-    //
-    // The pattern (see wl-clipboard's paste.c for reference):
-    //
-    //   1. int fds[2]; pipe(fds);
-    //   2. ext_data_control_offer_v1_receive(offer, mime, fds[1]);
-    //      The compositor will write the selection contents to fds[1].
-    //   3. close(fds[1]);
-    //   4. wl_display_flush(state.display);  // make sure receive() is sent
-    //   5. read fds[0] in a loop until EOF, accumulating bytes.
-    //   6. fwrite(...) to stdout, fputc('\n'), fflush(stdout).
-    //   7. close(fds[0]);
-    //   8. ext_data_control_offer_v1_destroy(offer);
-    //
-    // Subtlety: receive() is async. The compositor won't write to fds[1]
-    // until you flush the display AND let it process. Easiest is to just
-    // read(fds[0]) which blocks until the compositor closes the write end.
+    int fds[2];
+    if(pipe(fds) == -1){
+      std::fprintf(stderr, "pipe failed: %s\n", std::strerror(errno)); 
+      return;
+    }
+    // reminder: fds[0] = read end, fds[1] = write end
 
-    std::fprintf(stderr, "TODO: read offer for mime '%s' and print to stdout\n",
-                 s->chosen_mime.c_str());
+    ext_data_control_offer_v1_receive(offer, s->chosen_mime.c_str(), fds[1]);
+    close(fds[1]);
+    wl_display_flush(s->display);
+    char buf[4096];
+    ssize_t got = 0;
+    while((got = read(fds[0], buf, sizeof(buf))) > 0){
+      fwrite(buf,  1, got, stdout);
+    }
+    fputc('\n', stdout);
+    fflush(stdout);
+    close(fds[0]);
 
     ext_data_control_offer_v1_destroy(offer);
 }
