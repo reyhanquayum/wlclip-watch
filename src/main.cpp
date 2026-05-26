@@ -15,8 +15,11 @@
 //     cmake -B build && cmake --build build
 //     ./build/wlclip-watch
 
+#include <memory>
 #include <print>
 #include <sys/types.h>
+#include <wayland-client-core.h>
+#include <wayland-client-protocol.h>
 #include <wayland-client.h>
 #include "ext-data-control-v1-client-protocol.h"
 
@@ -29,8 +32,7 @@
 
 namespace {
 
-// Mime types we care about, in priority order. Most clipboards offer all of
-// these; we pick the first match. Add more if you want HTML / RTF / etc.
+// Add more mimetypes if want HTML / RTF / etc.
 constexpr const char* kPreferredMimes[] = {
     "text/plain;charset=utf-8",
     "text/plain",
@@ -39,13 +41,45 @@ constexpr const char* kPreferredMimes[] = {
     "TEXT",
 };
 
-// Holds every Wayland handle we care about. Filled in during registry binding.
+// RAII wrappers for wayland state handlers so no need to manually clean up
+
+struct WlDisplayDeleter{
+  void operator()(wl_display* d) const {wl_display_disconnect(d);}
+};
+
+using WlDisplayPtr = std::unique_ptr<wl_display, WlDisplayDeleter>;
+
+struct WlRegistryDeleter{
+  void operator()(wl_registry* r) const {wl_registry_destroy(r);}
+};
+
+using WlRegistryPtr = std::unique_ptr<wl_registry, WlRegistryDeleter>;
+
+struct WlSeatDeleter{
+  void operator()(wl_seat* s) const {wl_seat_destroy(s);}
+};
+
+using WlSeatPtr = std::unique_ptr<wl_seat, WlSeatDeleter>;
+
+struct ControlManagerDeleter{
+  void operator()(ext_data_control_manager_v1* m) const {ext_data_control_manager_v1_destroy(m);}
+};
+
+using ControlManagerPtr = std::unique_ptr<ext_data_control_manager_v1, ControlManagerDeleter>;
+
+struct ControlDeviceDeleter{
+  void operator()(ext_data_control_device_v1* d) const{ext_data_control_device_v1_destroy(d);}
+};
+
+using ControlDevicePtr = std::unique_ptr<ext_data_control_device_v1, ControlDeviceDeleter>;
+
+// wayland handlers filled in during registry binding
 struct State {
-    wl_display* display = nullptr;
-    wl_registry* registry = nullptr;
-    wl_seat* seat = nullptr;
-    ext_data_control_manager_v1* manager = nullptr;
-    ext_data_control_device_v1* device = nullptr;
+    WlDisplayPtr display;
+    WlRegistryPtr registry;
+    WlSeatPtr seat;
+    ControlManagerPtr manager;
+    ControlDevicePtr device;
 
     // Per-offer scratch state. The compositor will call our offer() callback
     // once per supported mime type, so we accumulate the best match here.
@@ -62,22 +96,15 @@ void on_registry_global(void* data, wl_registry* registry, uint32_t name,
     auto* s = static_cast<State*>(data);
 
     if (std::strcmp(interface, wl_seat_interface.name) == 0) {
-        // Bind v1 of wl_seat (we don't need keyboard/pointer events, just the
-        // seat itself as a "where does the clipboard belong" handle).
-        s->seat = static_cast<wl_seat*>(
-            wl_registry_bind(registry, name, &wl_seat_interface, 1));
+        s->seat.reset(static_cast<wl_seat*>(
+            wl_registry_bind(registry, name, &wl_seat_interface, 1)));
     } else if (std::strcmp(interface, ext_data_control_manager_v1_interface.name) == 0) {
-        // ext-data-control-v1 only has version 1. (Unlike the old wlr
-        // protocol, where primary_selection was a v2 addition, here it is
-        // part of the interface from the start.)
-        s->manager = static_cast<ext_data_control_manager_v1*>(
-            wl_registry_bind(registry, name, &ext_data_control_manager_v1_interface, 1));
+        s->manager.reset(static_cast<ext_data_control_manager_v1*>(
+            wl_registry_bind(registry, name, &ext_data_control_manager_v1_interface, 1)));
     }
 }
 
 void on_registry_global_remove(void*, wl_registry*, uint32_t) {
-    // Globals can disappear (seat disconnect, etc.). For a daemon you'd
-    // handle this; for our tool, just exit on event-loop error if it happens.
 }
 
 const wl_registry_listener kRegistryListener = {
@@ -95,7 +122,6 @@ void on_offer_mime(void* data, ext_data_control_offer_v1* /*offer*/,
     auto* s = static_cast<State*>(data);
     for (int i = 0; i < (int)(sizeof(kPreferredMimes) / sizeof(*kPreferredMimes)); ++i) {
         if (std::strcmp(mime_type, kPreferredMimes[i]) == 0) {
-            // Better match (lower index) wins.
             if (s->chosen_priority < 0 || i < s->chosen_priority) {
                 s->chosen_priority = i;
                 s->chosen_mime = mime_type;
@@ -143,14 +169,14 @@ void on_device_selection(void* data, ext_data_control_device_v1* /*device*/,
 
     int fds[2];
     if(pipe(fds) == -1){
-      std::println(stderr, "pipe failed: %s", std::strerror(errno)); 
+      std::println(stderr, "pipe failed: {}", std::strerror(errno)); 
       return;
     }
     // reminder: fds[0] = read end, fds[1] = write end
 
     ext_data_control_offer_v1_receive(offer, s->chosen_mime.c_str(), fds[1]);
     close(fds[1]);
-    wl_display_flush(s->display);
+    wl_display_flush(s->display.get());
     char buf[4096];
     ssize_t got = 0;
     while((got = read(fds[0], buf, sizeof(buf))) > 0){
@@ -188,19 +214,19 @@ const ext_data_control_device_v1_listener kDeviceListener = {
 int main() {
     State state;
 
-    state.display = wl_display_connect(nullptr);
+    state.display = WlDisplayPtr{wl_display_connect(nullptr)};
     if (!state.display) {
         std::println(stderr, "wlclip-watch: failed to connect to Wayland display");
         std::println(stderr, "  (is WAYLAND_DISPLAY set? are you running on Wayland?)");
         return 1;
     }
 
-    state.registry = wl_display_get_registry(state.display);
-    wl_registry_add_listener(state.registry, &kRegistryListener, &state);
+    state.registry = WlRegistryPtr{wl_display_get_registry(state.display.get())};
+    wl_registry_add_listener(state.registry.get(), &kRegistryListener, &state);
 
     // Roundtrip: send our pending requests and wait for the server's reply.
     // After this, on_registry_global has fired once per global.
-    wl_display_roundtrip(state.display);
+    wl_display_roundtrip(state.display.get());
 
     if (!state.seat) {
         std::println(stderr, "wlclip-watch: no wl_seat advertised by compositor");
@@ -214,22 +240,15 @@ int main() {
         return 1;
     }
 
-    state.device = ext_data_control_manager_v1_get_data_device(
-        state.manager, state.seat);
-    ext_data_control_device_v1_add_listener(state.device, &kDeviceListener, &state);
+    state.device.reset(ext_data_control_manager_v1_get_data_device(
+        state.manager.get(), state.seat.get()));
+    ext_data_control_device_v1_add_listener(state.device.get(), &kDeviceListener, &state);
 
     // Main event loop. Each iteration dispatches whatever events arrived and
     // calls our listener callbacks. wl_display_dispatch blocks until events
     // are available, so this loop is cheap when idle.
-    while (wl_display_dispatch(state.display) != -1) {
+    while (wl_display_dispatch(state.display.get()) != -1) {
         // (callbacks did the work)
     }
-
-    // Unreachable in normal operation — only here if dispatch errored.
-    ext_data_control_device_v1_destroy(state.device);
-    ext_data_control_manager_v1_destroy(state.manager);
-    wl_seat_destroy(state.seat);
-    wl_registry_destroy(state.registry);
-    wl_display_disconnect(state.display);
     return 0;
 }
