@@ -189,7 +189,7 @@ void on_device_selection(void* data, ext_data_control_device_v1* /*device*/,
     ext_data_control_offer_v1_destroy(offer);
 }
 
-void on_device_finished(void* data, ext_data_control_device_v1* device) {
+void on_device_finished(void* data, ext_data_control_device_v1* /*device*/) {
   auto *s = static_cast<State*>(data);
   s->device.reset();
   std::exit(0);
