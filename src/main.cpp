@@ -189,10 +189,10 @@ void on_device_selection(void* data, ext_data_control_device_v1* /*device*/,
     ext_data_control_offer_v1_destroy(offer);
 }
 
-void on_device_finished(void*, ext_data_control_device_v1* device) {
-    // Compositor told us we're done (e.g. seat disappeared). Clean exit.
-    ext_data_control_device_v1_destroy(device);
-    std::exit(0);
+void on_device_finished(void* data, ext_data_control_device_v1* device) {
+  auto *s = static_cast<State*>(data);
+  s->device.reset();
+  std::exit(0);
 }
 
 void on_device_primary_selection(void*, ext_data_control_device_v1*,
