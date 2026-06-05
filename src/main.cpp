@@ -32,7 +32,7 @@
 
 namespace {
 
-// Add more mimetypes if want HTML / RTF / etc.
+// add more mimetypes if want HTML / RTF / etc.
 constexpr const char* kPreferredMimes[] = {
     "text/plain;charset=utf-8",
     "text/plain",
@@ -81,15 +81,9 @@ struct State {
     ControlManagerPtr manager;
     ControlDevicePtr device;
 
-    // Per-offer scratch state. The compositor will call our offer() callback
-    // once per supported mime type, so we accumulate the best match here.
     std::string chosen_mime;
     int chosen_priority = -1;  // lower = better (index into kPreferredMimes)
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// wl_registry listener: fires once per global the compositor exposes.
-// ────────────────────────────────────────────────────────────────────────────
 
 void on_registry_global(void* data, wl_registry* registry, uint32_t name,
                         const char* interface, uint32_t /*version*/) {
@@ -112,11 +106,8 @@ const wl_registry_listener kRegistryListener = {
     .global_remove = on_registry_global_remove,
 };
 
-// ────────────────────────────────────────────────────────────────────────────
-// ext_data_control_offer_v1 listener: tells us which mime types this
-// particular offer supports. Called multiple times — once per mime type.
-// ────────────────────────────────────────────────────────────────────────────
 
+// listener, called multiple times
 void on_offer_mime(void* data, ext_data_control_offer_v1* /*offer*/,
                    const char* mime_type) {
     auto* s = static_cast<State*>(data);
@@ -135,16 +126,6 @@ const ext_data_control_offer_v1_listener kOfferListener = {
     .offer = on_offer_mime,
 };
 
-// ────────────────────────────────────────────────────────────────────────────
-// ext_data_control_device_v1 listener: this is where the action happens.
-//
-// Lifecycle of a clipboard change:
-//   1. data_offer    — compositor announces a new offer object
-//   2. (offer.offer) — that offer announces its mime types (kOfferListener)
-//   3. selection     — the offer becomes the current clipboard
-//   4. (we read it)  — we pipe(), receive(), then read the fd
-// ────────────────────────────────────────────────────────────────────────────
-
 void on_device_data_offer(void* data, ext_data_control_device_v1* /*device*/,
                           ext_data_control_offer_v1* offer) {
     auto* s = static_cast<State*>(data);
@@ -162,7 +143,6 @@ void on_device_selection(void* data, ext_data_control_device_v1* /*device*/,
     if (!offer) return;
 
     if (s->chosen_mime.empty()) {
-        // No text-ish mime types; this is probably an image or something.
         ext_data_control_offer_v1_destroy(offer);
         return;
     }
@@ -197,7 +177,7 @@ void on_device_finished(void* data, ext_data_control_device_v1* /*device*/) {
 
 void on_device_primary_selection(void*, ext_data_control_device_v1*,
                                  ext_data_control_offer_v1* offer) {
-    // Middle-click (primary) selection. We don't care about this for mining;
+    // Middle-click (primary) selection We don't care about this for mining
     // just destroy the offer so the compositor doesn't think we want it.
     if (offer) ext_data_control_offer_v1_destroy(offer);
 }
@@ -224,8 +204,7 @@ int main() {
     state.registry = WlRegistryPtr{wl_display_get_registry(state.display.get())};
     wl_registry_add_listener(state.registry.get(), &kRegistryListener, &state);
 
-    // Roundtrip: send our pending requests and wait for the server's reply.
-    // After this, on_registry_global has fired once per global.
+    // roundtrip send  pending requests and wait for the server's reply
     wl_display_roundtrip(state.display.get());
 
     if (!state.seat) {
@@ -244,9 +223,7 @@ int main() {
         state.manager.get(), state.seat.get()));
     ext_data_control_device_v1_add_listener(state.device.get(), &kDeviceListener, &state);
 
-    // Main event loop. Each iteration dispatches whatever events arrived and
-    // calls our listener callbacks. wl_display_dispatch blocks until events
-    // are available, so this loop is cheap when idle.
+    // main event loop
     while (wl_display_dispatch(state.display.get()) != -1) {
         // (callbacks did the work)
     }
